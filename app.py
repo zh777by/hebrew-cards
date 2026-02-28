@@ -55,9 +55,48 @@ def load_cards():
         return []
 
 
+import requests
+import base64
+
 def save_cards(cards):
+
+    # --- save locally ---
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(cards, f, ensure_ascii=False, indent=2)
+
+    # --- backup to GitHub ---
+    try:
+        token = st.secrets["GITHUB_TOKEN"]
+        repo = st.secrets["GITHUB_REPO"]
+
+        url = f"https://api.github.com/repos/{repo}/contents/cards.json"
+
+        headers = {
+            "Authorization": f"token {token}",
+            "Accept": "application/vnd.github+json"
+        }
+
+        # get current file sha
+        r = requests.get(url, headers=headers)
+
+        sha = None
+        if r.status_code == 200:
+            sha = r.json()["sha"]
+
+        content = base64.b64encode(
+            json.dumps(cards, ensure_ascii=False, indent=2).encode("utf-8")
+        ).decode("utf-8")
+
+        data = {
+            "message": "Auto backup cards",
+            "content": content,
+            "sha": sha
+        }
+
+        requests.put(url, headers=headers, json=data)
+
+    except Exception as e:
+        print("GitHub backup failed:", e)
 
 
 cards = load_cards()
