@@ -1,182 +1,102 @@
 import streamlit as st
 import json
-import time
-from pathlib import Path
-import random
+import os
+from PIL import Image
+import uuid
 
-# --- НАСТРОЙКИ ПУТЕЙ ---
 DATA_FILE = "cards.json"
-IMAGE_DIR = Path("images")
-IMAGE_DIR.mkdir(exist_ok=True) # Создаем папку, если её нет
+IMAGE_FOLDER = "images"
 
-# --- ФУНКЦИИ ЗАГРУЗКИ И СОХРАНЕНИЯ ---
+os.makedirs(IMAGE_FOLDER, exist_ok=True)
+
+# ---------- load cards ----------
 def load_cards():
-    if not Path(DATA_FILE).exists():
+    if not os.path.exists(DATA_FILE):
         return []
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return []
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-def save_cards(cards_list):
+def save_cards(cards):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(cards_list, f, ensure_ascii=False, indent=2)
+        json.dump(cards, f, ensure_ascii=False, indent=2)
 
-# Загружаем базу данных
 cards = load_cards()
 
-# --- ИНИЦИАЛИЗАЦИЯ СОСТОЯНИЯ (SESSION STATE) ---
-if "show_back" not in st.session_state:
-    st.session_state.show_back = False
-if "mode" not in st.session_state:
-    st.session_state.mode = "study"
-if "current_card_id" not in st.session_state:
-    st.session_state.current_card_id = None
+# ---------- UI ----------
+st.title("📚 Hebrew Flashcards")
 
-# --- ФИЛЬТРАЦИЯ ---
-def get_active_cards():
-    if st.session_state.mode == "study":
-        return [c for c in cards if not c.get("learned", False)]
-    if st.session_state.mode == "favorites":
-        return [c for c in cards if c.get("favorite", False)]
-    return cards
+menu = st.sidebar.selectbox(
+    "Menu",
+    ["Study", "Add Card", "All Cards"]
+)
 
-active_cards = get_active_cards()
+# ---------- ADD CARD ----------
+if menu == "Add Card":
+    st.header("Add new card")
 
-# --- ИНТЕРФЕЙС: ЗАГОЛОВОК И МЕНЮ ---
-st.title("🇮🇱 Hebrew Cards V2")
+    translation = st.text_input("Russian translation")
+    image = st.file_uploader("Upload screenshot", type=["png","jpg","jpeg"])
 
-col1, col2, col3 = st.columns(3)
-with col1:
-    if st.button("📚 Учить", use_container_width=True):
-        st.session_state.mode = "study"
-        st.session_state.show_back = False
-        st.session_state.current_card_id = None
-        st.rerun()
-with col2:
-    if st.button("⭐ Избранное", use_container_width=True):
-        st.session_state.mode = "favorites"
-        st.session_state.show_back = False
-        st.session_state.current_card_id = None
-        st.rerun()
-with col3:
-    if st.button("📋 Все", use_container_width=True):
-        st.session_state.mode = "all"
-        st.session_state.show_back = False
-        st.session_state.current_card_id = None
-        st.rerun()
+    if st.button("Save card"):
+        if translation and image:
+            file_id = str(uuid.uuid4()) + ".png"
+            path = os.path.join(IMAGE_FOLDER, file_id)
 
-st.divider()
+            with open(path, "wb") as f:
+                f.write(image.read())
 
-# --- ФОРМА ДОБАВЛЕНИЯ (ВСЕГДА СВЕРХУ) ---
-with st.expander("➕ Добавить новую карточку", expanded=not active_cards):
-    front_input = st.text_input("Перевод (на русском)")
-    image_file = st.file_uploader("Загрузить скриншот", type=["png", "jpg", "jpeg"])
+            cards.append({
+                "id": file_id,
+                "translation": translation,
+                "learned": False
+            })
 
-    if st.button("Сохранить карточку"):
-        if front_input and image_file:
-            img_path = IMAGE_DIR / image_file.name
-            with open(img_path, "wb") as f:
-                f.write(image_file.getbuffer())
-
-            new_card = {
-                "id": int(time.time() * 1000),
-                "front": front_input,
-                "image": str(img_path),
-                "learned": False,
-                "favorite": False,
-                "score": 0,
-                "last_seen": 0
-            }
-            cards.append(new_card)
             save_cards(cards)
-            st.success(f"Карточка '{front_input}' добавлена!")
-            time.sleep(0.5)
-            st.rerun()
+            st.success("Card added!")
+
+# ---------- STUDY ----------
+elif menu == "Study":
+    st.header("Study")
+
+    unlearned = [c for c in cards if not c["learned"]]
+
+    if not unlearned:
+        st.info("All cards learned!")
+    else:
+        card = unlearned[0]
+
+        if "show_back" not in st.session_state:
+            st.session_state.show_back = False
+
+        if not st.session_state.show_back:
+            if st.button(card["translation"]):
+                st.session_state.show_back = True
         else:
-            st.error("Заполните текст и выберите картинку")
+            img = Image.open(os.path.join(IMAGE_FOLDER, card["id"]))
+            st.image(img)
 
-st.divider()
+            col1, col2 = st.columns(2)
 
-# --- ПРОВЕРКА НА ПУСТОТУ ---
-if not active_cards:
-    st.info(f"В режиме '{st.session_state.mode}' пока нет карточек. Используйте форму выше 👆")
-    st.stop()
+            if col1.button("✅ Learned"):
+                card["learned"] = True
+                save_cards(cards)
+                st.session_state.show_back = False
+                st.rerun()
 
-# --- ЛОГИКА ВЫБОРА КАРТОЧКИ (УМНОЕ ПОВТОРЕНИЕ) ---
-def pick_card(cards_list):
-    now = time.time()
-    weights = []
-    for c in cards_list:
-        score = c.get("score", 0)
-        last = c.get("last_seen", 0)
-        # Вес: чем ниже score и чем дольше не видели, тем выше вероятность
-        weight = max(1, 10 - score + (now - last) / 3600)
-        weights.append(weight)
-    return random.choices(cards_list, weights=weights, k=1)[0]
+            if col2.button("↩️ Back"):
+                st.session_state.show_back = False
+                st.rerun()
 
-# Фиксируем карточку в сессии, чтобы она не менялась при каждом клике
-if st.session_state.current_card_id is None or not any(c['id'] == st.session_state.current_card_id for c in active_cards):
-    chosen = pick_card(active_cards)
-    st.session_state.current_card_id = chosen['id']
+# ---------- ALL CARDS ----------
+elif menu == "All Cards":
+    st.header("All cards")
 
-# Находим объект текущей карточки
-current_card = next((c for c in cards if c['id'] == st.session_state.current_card_id), None)
+    for c in cards:
+        col1, col2 = st.columns([4,1])
 
-if not current_card:
-    st.session_state.current_card_id = None
-    st.rerun()
+        col1.write(c["translation"])
 
-# --- ОТОБРАЖЕНИЕ КАРТОЧКИ ---
-st.subheader(f"Режим: {st.session_state.mode}")
-
-if not st.session_state.show_back:
-    # Сторона с текстом
-    if st.button(f"👁 {current_card['front']}\n\n(Нажми, чтобы увидеть ответ)", use_container_width=True):
-        st.session_state.show_back = True
-        st.rerun()
-else:
-    # Сторона с картинкой
-    st.image(current_card["image"], use_container_width=True)
-    
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        if st.button("❌ Снова", use_container_width=True):
-            current_card["score"] = max(0, current_card.get("score", 0) - 1)
-            current_card["last_seen"] = time.time()
+        if col2.button("Delete", key=c["id"]):
+            cards.remove(c)
             save_cards(cards)
-            st.session_state.show_back = False
-            st.session_state.current_card_id = None
-            st.rerun()
-    with col_b:
-        if st.button("👍 Хорошо", use_container_width=True):
-            current_card["score"] = current_card.get("score", 0) + 1
-            current_card["last_seen"] = time.time()
-            save_cards(cards)
-            st.session_state.show_back = False
-            st.session_state.current_card_id = None
-            st.rerun()
-    with col_c:
-        if st.button("✅ Знаю", use_container_width=True):
-            current_card["learned"] = True
-            save_cards(cards)
-            st.session_state.show_back = False
-            st.session_state.current_card_id = None
-            st.rerun()
-
-    # Доп. функции
-    c_fav, c_del = st.columns(2)
-    with c_fav:
-        fav_text = "🌟 В избранном" if current_card.get("favorite") else "⭐ В избранное"
-        if st.button(fav_text, use_container_width=True):
-            current_card["favorite"] = not current_card.get("favorite", False)
-            save_cards(cards)
-            st.rerun()
-    with c_del:
-        if st.button("🗑 Удалить", use_container_width=True):
-            cards.remove(current_card)
-            save_cards(cards)
-            st.session_state.current_card_id = None
-            st.session_state.show_back = False
             st.rerun()
