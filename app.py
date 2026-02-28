@@ -1,17 +1,17 @@
 import streamlit as st
 import json
-import os
-from PIL import Image
-import uuid
+import random
+import time
+from pathlib import Path
 
 DATA_FILE = "cards.json"
-IMAGE_FOLDER = "images"
 
-os.makedirs(IMAGE_FOLDER, exist_ok=True)
+# -----------------------
+# LOAD / SAVE
+# -----------------------
 
-# ---------- load cards ----------
 def load_cards():
-    if not os.path.exists(DATA_FILE):
+    if not Path(DATA_FILE).exists():
         return []
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -22,81 +22,185 @@ def save_cards(cards):
 
 cards = load_cards()
 
-# ---------- UI ----------
-st.title("📚 Hebrew Flashcards")
+# -----------------------
+# SESSION STATE
+# -----------------------
 
-menu = st.sidebar.selectbox(
-    "Menu",
-    ["Study", "Add Card", "All Cards"]
-)
+if "index" not in st.session_state:
+    st.session_state.index = 0
 
-# ---------- ADD CARD ----------
-if menu == "Add Card":
-    st.header("Add new card")
+if "show_back" not in st.session_state:
+    st.session_state.show_back = False
 
-    translation = st.text_input("Russian translation")
-    image = st.file_uploader("Upload screenshot", type=["png","jpg","jpeg"])
+if "mode" not in st.session_state:
+    st.session_state.mode = "study"
 
-    if st.button("Save card"):
-        if translation and image:
-            file_id = str(uuid.uuid4()) + ".png"
-            path = os.path.join(IMAGE_FOLDER, file_id)
+# -----------------------
+# FILTER MODES
+# -----------------------
 
-            with open(path, "wb") as f:
-                f.write(image.read())
+def get_active_cards():
+    if st.session_state.mode == "study":
+        return [c for c in cards if not c["learned"]]
 
-            cards.append({
-                "id": file_id,
-                "translation": translation,
-                "learned": False
-            })
+    if st.session_state.mode == "favorites":
+        return [c for c in cards if c["favorite"]]
 
-            save_cards(cards)
-            st.success("Card added!")
+    if st.session_state.mode == "all":
+        return cards
 
-# ---------- STUDY ----------
-elif menu == "Study":
-    st.header("Study")
+    return cards
 
-    unlearned = [c for c in cards if not c["learned"]]
+active_cards = get_active_cards()
 
-    if not unlearned:
-        st.info("All cards learned!")
-    else:
-        card = unlearned[0]
+# -----------------------
+# HEADER
+# -----------------------
 
-        if "show_back" not in st.session_state:
-            st.session_state.show_back = False
+st.title("🇮🇱 Hebrew Cards")
 
-        if not st.session_state.show_back:
-            if st.button(card["translation"]):
-                st.session_state.show_back = True
-        else:
-            img = Image.open(os.path.join(IMAGE_FOLDER, card["id"]))
-            st.image(img)
+col1, col2, col3 = st.columns(3)
 
-            col1, col2 = st.columns(2)
+with col1:
+    if st.button("📚 Study"):
+        st.session_state.mode = "study"
+        st.session_state.index = 0
 
-            if col1.button("✅ Learned"):
-                card["learned"] = True
-                save_cards(cards)
-                st.session_state.show_back = False
-                st.rerun()
+with col2:
+    if st.button("⭐ Favorites"):
+        st.session_state.mode = "favorites"
+        st.session_state.index = 0
 
-            if col2.button("↩️ Back"):
-                st.session_state.show_back = False
-                st.rerun()
+with col3:
+    if st.button("📋 All"):
+        st.session_state.mode = "all"
+        st.session_state.index = 0
 
-# ---------- ALL CARDS ----------
-elif menu == "All Cards":
-    st.header("All cards")
+st.divider()
 
+# -----------------------
+# NO CARDS
+# -----------------------
+
+if not active_cards:
+    st.warning("Нет карточек в этом режиме")
+    st.stop()
+
+# -----------------------
+# CARD SELECTION (SPACED REPETITION)
+# -----------------------
+
+def pick_card(cards):
+    now = time.time()
+
+    # вес = меньше score → чаще показывать
+    weights = []
     for c in cards:
-        col1, col2 = st.columns([4,1])
+        score = c.get("score", 0)
+        last = c.get("last_seen", 0)
 
-        col1.write(c["translation"])
+        delay_bonus = (now - last) / 10000
+        weight = max(1, 5 - score + delay_bonus)
 
-        if col2.button("Delete", key=c["id"]):
-            cards.remove(c)
+        weights.append(weight)
+
+    return random.choices(cards, weights=weights, k=1)[0]
+
+card = pick_card(active_cards)
+
+# -----------------------
+# CARD UI
+# -----------------------
+
+st.subheader("Карточка")
+
+if not st.session_state.show_back:
+    if st.button(card["front"], use_container_width=True):
+        st.session_state.show_back = True
+        st.rerun()
+
+else:
+    st.image(card["image"], use_container_width=True)
+
+    col1, col2, col3 = st.columns(3)
+
+    # ❌ Не знаю
+    with col1:
+        if st.button("❌ Again"):
+            card["score"] = max(0, card.get("score", 0) - 1)
+            card["last_seen"] = time.time()
             save_cards(cards)
+            st.session_state.show_back = False
             st.rerun()
+
+    # 👍 Нормально
+    with col2:
+        if st.button("👍 Good"):
+            card["score"] = card.get("score", 0) + 1
+            card["last_seen"] = time.time()
+            save_cards(cards)
+            st.session_state.show_back = False
+            st.rerun()
+
+    # ✅ Выучено
+    with col3:
+        if st.button("✅ Learned"):
+            card["learned"] = True
+            card["last_seen"] = time.time()
+            save_cards(cards)
+            st.session_state.show_back = False
+            st.rerun()
+
+# -----------------------
+# FAVORITE + DELETE
+# -----------------------
+
+col1, col2 = st.columns(2)
+
+with col1:
+    if st.button("⭐ Toggle Favorite"):
+        card["favorite"] = not card.get("favorite", False)
+        save_cards(cards)
+        st.rerun()
+
+with col2:
+    if st.button("🗑 Delete"):
+        cards.remove(card)
+        save_cards(cards)
+        st.session_state.show_back = False
+        st.rerun()
+
+st.divider()
+
+# -----------------------
+# ADD NEW CARD
+# -----------------------
+
+st.subheader("Добавить карточку")
+
+front = st.text_input("Русский перевод")
+image_file = st.file_uploader("Скриншот", type=["png", "jpg", "jpeg"])
+
+if st.button("➕ Add Card"):
+    if front and image_file:
+
+        img_path = f"images/{image_file.name}"
+
+        with open(img_path, "wb") as f:
+            f.write(image_file.getbuffer())
+
+        new_card = {
+            "id": int(time.time()),
+            "front": front,
+            "image": img_path,
+            "learned": False,
+            "favorite": False,
+            "score": 0,
+            "last_seen": 0
+        }
+
+        cards.append(new_card)
+        save_cards(cards)
+
+        st.success("Карточка добавлена!")
+        st.rerun()
