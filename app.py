@@ -1,241 +1,175 @@
 import streamlit as st
 import json
-import os
 import time
-import random
-from PIL import Image
-
-# ===============================
-# PAGE CONFIG + PWA SUPPORT
-# ===============================
-
-st.set_page_config(
-    page_title="Hebrew Cards",
-    page_icon="🇮🇱",
-    layout="centered"
-)
-
-# PWA connection
-st.markdown("""
-<link rel="manifest" href="/static/manifest.json">
-<meta name="theme-color" content="#ffffff">
-
-<script>
-if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/static/service-worker.js');
-}
-</script>
-""", unsafe_allow_html=True)
-
-
-# ===============================
-# FILE PATHS
-# ===============================
-
-DATA_FILE = "cards.json"
-IMAGE_DIR = "images"
-
-# auto-create folders/files
-os.makedirs(IMAGE_DIR, exist_ok=True)
-
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "w") as f:
-        json.dump([], f)
-
-
-# ===============================
-# DATA FUNCTIONS
-# ===============================
-
-def load_cards():
-    try:
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except:
-        return []
-
-
+import os
 import requests
 import base64
+import pandas as pd
+from github import Github
 
-def save_cards(cards):
+# --- КОНФИГУРАЦИЯ СТРАНИЦЫ ---
+st.set_page_config(page_title="Hebrew V3", page_icon="🇮🇱", layout="centered")
 
-    # --- save locally ---
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
+# PWA Support & Swipe JS
+st.markdown("""
+    <link rel="manifest" href="/static/manifest.json">
+    <script>
+        if ('serviceWorker' in navigator) {
+          navigator.serviceWorker.register('/static/service-worker.js');
+        }
+        
+        // Перехват жестов для Streamlit
+        var startX;
+        document.addEventListener('touchstart', e => { startX = e.changedTouches[0].screenX; });
+        document.addEventListener('touchend', e => {
+            let diffX = e.changedTouches[0].screenX - startX;
+            if (Math.abs(diffX) > 100) {
+                let direction = diffX > 0 ? 'right' : 'left';
+                window.parent.postMessage({type: 'streamlit:setComponentValue', value: direction}, '*');
+            }
+        });
+    </script>
+""", unsafe_allow_html=True)
+
+# --- ФУНКЦИИ ДАННЫХ ---
+
+def load_data():
+    if not os.path.exists("cards.json"):
+        return []
+    with open("cards.json", "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_all(cards):
+    # 1. Локальное сохранение
+    with open("cards.json", "w", encoding="utf-8") as f:
         json.dump(cards, f, ensure_ascii=False, indent=2)
-
-    # --- backup to GitHub ---
+    
+    # 2. GitHub Backup
     try:
         token = st.secrets["GITHUB_TOKEN"]
-        repo = st.secrets["GITHUB_REPO"]
-
-        url = f"https://api.github.com/repos/{repo}/contents/cards.json"
-
-        headers = {
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github+json"
-        }
-
-        # get current file sha
-        r = requests.get(url, headers=headers)
-
-        sha = None
-        if r.status_code == 200:
-            sha = r.json()["sha"]
-
-        content = base64.b64encode(
-            json.dumps(cards, ensure_ascii=False, indent=2).encode("utf-8")
-        ).decode("utf-8")
-
-        data = {
-            "message": "Auto backup cards",
-            "content": content,
-            "sha": sha
-        }
-
-        requests.put(url, headers=headers, json=data)
-
+        repo_name = st.secrets["GITHUB_REPO"]
+        g = Github(token)
+        repo = g.get_user().get_repo(repo_name.split('/')[-1])
+        file = repo.get_contents("cards.json")
+        content = json.dumps(cards, ensure_ascii=False, indent=2)
+        repo.update_file("cards.json", "Auto-update SM2", content, file.sha, branch="main")
+        st.toast("☁️ Синхронизировано с GitHub")
     except Exception as e:
-        print("GitHub backup failed:", e)
+        st.error(f"Ошибка бэкапа: {e}")
 
+# --- АЛГОРИТМ SM-2 (ANKI) ---
 
-cards = load_cards()
+def update_sm2(card, quality):
+    # quality: 0-2 (не помню), 3-5 (помню)
+    if quality >= 3:
+        if card.get("repetitions", 0) == 0:
+            card["interval"] = 1
+        elif card["repetitions"] == 1:
+            card["interval"] = 6
+        else:
+            card["interval"] = round(card["interval"] * card.get("ease", 2.5))
+        card["repetitions"] = card.get("repetitions", 0) + 1
+    else:
+        card["repetitions"] = 0
+        card["interval"] = 1
 
+    card["ease"] = card.get("ease", 2.5) + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
+    card["ease"] = max(1.3, card["ease"])
+    card["due_date"] = time.time() + (card["interval"] * 86400)
+    return card
 
-# ===============================
-# SIDEBAR — ADD CARD
-# ===============================
+# --- ИНТЕРФЕЙС ---
 
-st.sidebar.header("➕ Add New Card")
+def main():
+    st.title("Hebrew Learning V3 🧠")
+    
+    if 'cards' not in st.session_state:
+        st.session_state.cards = load_data()
+    
+    tab1, tab2, tab3 = st.tabs(["Учить", "Добавить", "Аналитика"])
 
-front = st.sidebar.text_input("Russian translation")
-image_file = st.sidebar.file_uploader(
-    "Upload screenshot",
-    type=["png", "jpg", "jpeg"]
-)
+    with tab1:
+        now = time.time()
+        # Фильтруем те, что пора учить
+        due_cards = [c for c in st.session_state.cards if c.get("due_date", 0) <= now]
+        
+        if not due_cards:
+            st.success("🎉 Все карточки выучены на сегодня!")
+            if st.button("Повторить всё вне очереди"):
+                due_cards = st.session_state.cards
+        
+        if due_cards:
+            card = due_cards[0]
+            
+            with st.container(border=True):
+                st.subheader(card["front"])
+                if card.get("image"):
+                    st.image(card["image"], use_container_width=True)
+                
+                show = st.button("Показать перевод", use_container_width=True)
+                
+                if show:
+                    st.divider()
+                    st.markdown(f"### {card.get('back', 'Перевод не задан')}")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("❌ Снова (1д)", use_container_width=True):
+                            card = update_sm2(card, 2)
+                            save_all(st.session_state.cards)
+                            st.rerun()
+                    with col2:
+                        if st.button("✅ Знаю", use_container_width=True):
+                            card = update_sm2(card, 5)
+                            save_all(st.session_state.cards)
+                            st.rerun()
+            
+            st.info("💡 На телефоне можно свайпать: Влево — Снова, Вправо — Знаю")
 
-if st.sidebar.button("Add Card"):
-
-    if front and image_file:
-
-        try:
-            filename = f"{int(time.time())}_{image_file.name}"
-            img_path = os.path.join(IMAGE_DIR, filename)
-
-            with open(img_path, "wb") as f:
-                f.write(image_file.getbuffer())
-
+    with tab2:
+        st.subheader("Новая карточка")
+        new_front = st.text_input("Слово (Иврит)")
+        new_back = st.text_input("Перевод")
+        uploaded_file = st.file_uploader("Картинка", type=['png', 'jpg', 'jpeg'])
+        
+        if st.button("Сохранить"):
+            img_path = ""
+            if uploaded_file:
+                img_path = f"images/{int(time.time())}.png"
+                with open(img_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+            
             new_card = {
                 "id": int(time.time()),
-                "front": front,
+                "front": new_front,
+                "back": new_back,
                 "image": img_path,
-                "learned": False,
-                "favorite": False,
-                "score": 0,
-                "last_seen": 0
+                "ease": 2.5,
+                "interval": 0,
+                "repetitions": 0,
+                "due_date": 0
             }
+            st.session_state.cards.append(new_card)
+            save_all(st.session_state.cards)
+            st.success("Добавлено!")
 
-            cards.append(new_card)
-            save_cards(cards)
+    with tab3:
+        if st.session_state.cards:
+            df = pd.DataFrame(st.session_state.cards)
+            st.metric("Всего карточек", len(df))
+            
+            # График интервалов (насколько глубоко слова в памяти)
+            st.write("Уровни памяти (интервал в днях):")
+            st.bar_chart(df['interval'].value_counts())
+            
+            if st.button("Очистить все данные"):
+                if st.checkbox("Я уверен"):
+                    st.session_state.cards = []
+                    save_all([])
+                    st.rerun()
 
-            st.sidebar.success("✅ Card added!")
-            st.rerun()
-
-        except Exception as e:
-            st.sidebar.error(e)
-
-    else:
-        st.sidebar.warning("Fill text and image")
-
-
-# ===============================
-# MAIN TITLE
-# ===============================
-
-st.title("🇮🇱 Hebrew Flashcards")
-
-
-if not cards:
-    st.info("No cards yet. Add your first one 👈")
-    st.stop()
-
-
-# ===============================
-# RANDOM CARD ENGINE
-# ===============================
-
-if "current_card" not in st.session_state:
-    st.session_state.current_card = random.choice(cards)
-
-card = st.session_state.current_card
-
-
-# ===============================
-# CARD DISPLAY
-# ===============================
-
-st.subheader("Tap to reveal")
-
-if "show_image" not in st.session_state:
-    st.session_state.show_image = False
-
-
-if st.button(card.get("front", "No text")):
-    st.session_state.show_image = True
-
-
-if st.session_state.show_image:
-
-    try:
-        img = Image.open(card["image"])
-        st.image(img, use_container_width=True)
-    except:
-        st.error("Image not found")
-
-    col1, col2, col3 = st.columns(3)
-
-    # learned
-    if col1.button("✅ Learned"):
-        for c in cards:
-            if c["id"] == card["id"]:
-                c["learned"] = True
-        save_cards(cards)
-        st.session_state.show_image = False
-        st.session_state.current_card = random.choice(cards)
-        st.rerun()
-
-    # favorite
-    if col2.button("⭐ Favorite"):
-        for c in cards:
-            if c["id"] == card["id"]:
-                c["favorite"] = not c.get("favorite", False)
-        save_cards(cards)
-        st.rerun()
-
-    # next
-    if col3.button("➡ Next"):
-        st.session_state.show_image = False
-        st.session_state.current_card = random.choice(cards)
-        st.rerun()
-
-
-# ===============================
-# CARD LIST
-# ===============================
-
-st.divider()
-st.subheader("📚 All Cards")
-
-for c in cards:
-
-    cols = st.columns([4,1])
-
-    status = "✅" if c.get("learned") else ""
-    fav = "⭐" if c.get("favorite") else ""
-
-    cols[0].write(f"{c.get('front','')} {status} {fav}")
-
-    if cols[1].button("Delete", key=c["id"]):
-        cards = [x for x in cards if x["id"] != c["id"]]
-        save_cards(cards)
-        st.rerun()
+if __name__ == "__main__":
+    # Создаем папку для картинок если нет
+    if not os.path.exists("images"):
+        os.makedirs("images")
+    main()
