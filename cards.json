@@ -58,5 +58,15 @@
     "ease": 2.5,
     "due_date": 0,
     "favorite": false
+  },
+  {
+    "id": 1772462642,
+    "front": "Класть, надевать",
+    "image": "images/1772462642_IMG_1184.png",
+    "repetitions": 0,
+    "interval": 0,
+    "ease": 2.5,
+    "due_date": 0,
+    "favorite": false
   }
 ]
