@@ -1,6 +1,5 @@
 streamlit
 requests
-PyGithub
 pandas
 plotly
 pillow
