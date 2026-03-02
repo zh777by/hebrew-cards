@@ -38,5 +38,15 @@
     "ease": 2.5,
     "due_date": 0,
     "favorite": false
+  },
+  {
+    "id": 1772462595,
+    "front": "Отдыхать",
+    "image": "images/1772462595_IMG_1182.png",
+    "repetitions": 0,
+    "interval": 0,
+    "ease": 2.5,
+    "due_date": 0,
+    "favorite": false
   }
 ]
