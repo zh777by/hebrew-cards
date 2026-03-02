@@ -1,4 +1,6 @@
 streamlit
-PyGithub
 requests
+PyGithub
 pandas
+plotly
+pillow
